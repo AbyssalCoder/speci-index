@@ -1,0 +1,62 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db';
+import { z } from 'zod';
+
+const registerSchema = z.object({
+  username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/),
+  displayName: z.string().min(1).max(50),
+  country: z.string().length(2).optional(),
+  state: z.string().max(100).optional(),
+});
+
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const parsed = registerSchema.safeParse(body);
+
+    if (!parsed.success) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid input', details: parsed.error.flatten() },
+        { status: 400 }
+      );
+    }
+
+    const { username, displayName, country, state } = parsed.data;
+
+    // Check username uniqueness
+    const existing = await prisma.user.findUnique({ where: { username } });
+    if (existing) {
+      return NextResponse.json(
+        { success: false, error: 'Username already taken' },
+        { status: 409 }
+      );
+    }
+
+    const profile = await prisma.user.create({
+      data: {
+        id: user.id,
+        email: user.email!,
+        username,
+        displayName,
+        country,
+        state,
+      },
+    });
+
+    return NextResponse.json({ success: true, data: profile });
+  } catch (error) {
+    console.error('Registration error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}

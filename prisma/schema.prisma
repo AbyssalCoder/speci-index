@@ -1,0 +1,509 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Users & Auth ───────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique
+  username      String   @unique @db.VarChar(30)
+  displayName   String   @db.VarChar(50)
+  avatarUrl     String?
+  bio           String?  @db.VarChar(280)
+  country       String?  @db.VarChar(2)
+  state         String?  @db.VarChar(100)
+  totalPoints   Int      @default(0)
+  speciesCount  Int      @default(0)
+  level         Int      @default(1)
+  xp            Int      @default(0)
+  trustScore    Float    @default(1.0)
+  role          UserRole @default(USER)
+  isBanned      Boolean  @default(false)
+  banReason     String?
+  lastActiveAt  DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  discoveries       Discovery[]
+  submissions        Submission[]
+  achievements       UserAchievement[]
+  sentFriendReqs     FriendRequest[]    @relation("SentRequests")
+  receivedFriendReqs FriendRequest[]    @relation("ReceivedRequests")
+  friendsA           Friendship[]       @relation("FriendA")
+  friendsB           Friendship[]       @relation("FriendB")
+  clanMemberships    ClanMember[]
+  questProgress      QuestProgress[]
+  reports            Report[]           @relation("Reporter")
+  reportedSubmissions Report[]          @relation("ReportedUser")
+  notifications      Notification[]
+  deviceSessions     DeviceSession[]
+  submissionVotes    SubmissionVote[]
+
+  @@index([totalPoints(sort: Desc)])
+  @@index([country, totalPoints(sort: Desc)])
+  @@index([country, state, totalPoints(sort: Desc)])
+  @@map("users")
+}
+
+enum UserRole {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+// ─── Species Reference Data ─────────────────────────────────────
+
+model Species {
+  id                 String             @id @default(uuid()) @db.Uuid
+  scientificName     String             @unique
+  commonName         String
+  kingdom            String             @default("Animalia")
+  phylum             String?
+  className          String?            @map("class")
+  order              String?
+  family             String?
+  genus              String?
+  category           SpeciesCategory
+  conservationStatus ConservationStatus @default(LC)
+  iucnId             String?
+  gbifId             String?
+  habitat            String?
+  regions            String[]           @default([])
+  description        String?
+  imageUrl           String?
+  rarityPoints       Int                @default(10)
+  rarityTier         RarityTier         @default(COMMON)
+  globalPopulation   String?
+  isVerified         Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  discoveries Discovery[]
+  submissions Submission[]
+
+  @@index([commonName])
+  @@index([category])
+  @@index([rarityTier])
+  @@index([conservationStatus])
+  @@map("species")
+}
+
+enum SpeciesCategory {
+  MAMMAL
+  BIRD
+  REPTILE
+  AMPHIBIAN
+  FISH
+  INSECT
+  ARACHNID
+  CRUSTACEAN
+  MOLLUSK
+  MARINE
+  FLOWER
+  FUNGI
+  OTHER
+}
+
+enum ConservationStatus {
+  EX  // Extinct
+  EW  // Extinct in the Wild
+  CR  // Critically Endangered
+  EN  // Endangered
+  VU  // Vulnerable
+  NT  // Near Threatened
+  LC  // Least Concern
+  DD  // Data Deficient
+  NE  // Not Evaluated
+}
+
+enum RarityTier {
+  COMMON      // 1-25 pts
+  UNCOMMON    // 26-100 pts
+  RARE        // 101-500 pts
+  EPIC        // 501-2000 pts
+  LEGENDARY   // 2001-10000 pts
+  MYTHIC      // 10001+ pts
+}
+
+// ─── Discoveries & Submissions ──────────────────────────────────
+
+model Discovery {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  speciesId    String   @db.Uuid
+  firstSeenAt  DateTime @default(now())
+  pointsEarned Int
+  latitude     Float?
+  longitude    Float?
+  locationName String?
+  submissionId String   @db.Uuid
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  species    Species    @relation(fields: [speciesId], references: [id])
+  submission Submission @relation(fields: [submissionId], references: [id])
+
+  @@unique([userId, speciesId])
+  @@index([userId])
+  @@map("discoveries")
+}
+
+model Submission {
+  id               String           @id @default(uuid()) @db.Uuid
+  userId           String           @db.Uuid
+  speciesId        String?          @db.Uuid
+  imageUrl         String
+  thumbnailUrl     String?
+  blurhash         String?
+  status           SubmissionStatus @default(PENDING)
+  aiConfidence     Float?
+  aiSpeciesGuess   String?
+  aiRejectionReason String?
+  latitude         Float?
+  longitude        Float?
+  locationName     String?
+  isRestrictedZone Boolean          @default(false)
+  pointsAwarded    Int              @default(0)
+  isDuplicate      Boolean          @default(false)
+  isFirstDiscovery Boolean          @default(false)
+  perceptualHash   String?
+  exifData         Json?
+  deviceInfo       Json?
+  fraudScore       Float            @default(0)
+  reviewedBy       String?          @db.Uuid
+  reviewNote       String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  species    Species?    @relation(fields: [speciesId], references: [id])
+  discovery  Discovery[]
+  reports    Report[]
+  votes      SubmissionVote[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([perceptualHash])
+  @@map("submissions")
+}
+
+enum SubmissionStatus {
+  PENDING
+  PROCESSING
+  ACCEPTED
+  REJECTED
+  FLAGGED
+  UNDER_REVIEW
+}
+
+model SubmissionVote {
+  id           String   @id @default(uuid()) @db.Uuid
+  submissionId String   @db.Uuid
+  userId       String   @db.Uuid
+  isCorrect    Boolean
+  createdAt    DateTime @default(now())
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, userId])
+  @@map("submission_votes")
+}
+
+// ─── Social Features ────────────────────────────────────────────
+
+model FriendRequest {
+  id         String              @id @default(uuid()) @db.Uuid
+  senderId   String              @db.Uuid
+  receiverId String              @db.Uuid
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+
+  sender   User @relation("SentRequests", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("ReceivedRequests", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+  @@map("friend_requests")
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model Friendship {
+  id        String   @id @default(uuid()) @db.Uuid
+  userAId   String   @db.Uuid
+  userBId   String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  userA User @relation("FriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("FriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@map("friendships")
+}
+
+// ─── Clans / Teams ──────────────────────────────────────────────
+
+model Clan {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.VarChar(30)
+  tag         String   @unique @db.VarChar(6)
+  description String?  @db.VarChar(280)
+  avatarUrl   String?
+  totalPoints Int      @default(0)
+  memberCount Int      @default(0)
+  maxMembers  Int      @default(50)
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members ClanMember[]
+
+  @@index([totalPoints(sort: Desc)])
+  @@map("clans")
+}
+
+model ClanMember {
+  id       String   @id @default(uuid()) @db.Uuid
+  clanId   String   @db.Uuid
+  userId   String   @db.Uuid
+  role     ClanRole @default(MEMBER)
+  joinedAt DateTime @default(now())
+
+  clan Clan @relation(fields: [clanId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clanId, userId])
+  @@map("clan_members")
+}
+
+enum ClanRole {
+  LEADER
+  OFFICER
+  MEMBER
+}
+
+// ─── Achievements & Quests ──────────────────────────────────────
+
+model Achievement {
+  id          String          @id @default(uuid()) @db.Uuid
+  slug        String          @unique
+  name        String
+  description String
+  iconUrl     String?
+  category    AchievementCategory
+  requirement Json
+  xpReward    Int             @default(0)
+  pointReward Int             @default(0)
+  rarity      RarityTier      @default(COMMON)
+  createdAt   DateTime        @default(now())
+
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+enum AchievementCategory {
+  DISCOVERY
+  COLLECTION
+  EXPLORATION
+  SOCIAL
+  SEASONAL
+  SPECIAL
+}
+
+model UserAchievement {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  achievementId String   @db.Uuid
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id])
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+model Quest {
+  id          String    @id @default(uuid()) @db.Uuid
+  title       String
+  description String
+  type        QuestType
+  requirement Json
+  xpReward    Int       @default(0)
+  pointReward Int       @default(0)
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  progress QuestProgress[]
+
+  @@index([type, isActive])
+  @@map("quests")
+}
+
+enum QuestType {
+  DAILY
+  WEEKLY
+  SEASONAL
+  SPECIAL
+}
+
+model QuestProgress {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  questId   String   @db.Uuid
+  progress  Int      @default(0)
+  completed Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quest Quest @relation(fields: [questId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questId])
+  @@map("quest_progress")
+}
+
+// ─── Geofencing ─────────────────────────────────────────────────
+
+model RestrictedZone {
+  id          String           @id @default(uuid()) @db.Uuid
+  name        String
+  type        RestrictedZoneType
+  latitude    Float
+  longitude   Float
+  radiusMeters Int
+  pointMultiplier Float        @default(0)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+
+  @@index([latitude, longitude])
+  @@map("restricted_zones")
+}
+
+enum RestrictedZoneType {
+  ZOO
+  SAFARI_PARK
+  BREEDING_CENTER
+  SANCTUARY
+  AQUARIUM
+  EXHIBIT
+  PET_STORE
+}
+
+// ─── Moderation & Reports ───────────────────────────────────────
+
+model Report {
+  id           String       @id @default(uuid()) @db.Uuid
+  reporterId   String       @db.Uuid
+  reportedUserId String?    @db.Uuid
+  submissionId String?      @db.Uuid
+  reason       ReportReason
+  description  String?      @db.VarChar(500)
+  status       ReportStatus @default(PENDING)
+  resolvedBy   String?      @db.Uuid
+  resolvedNote String?
+  createdAt    DateTime     @default(now())
+  resolvedAt   DateTime?
+
+  reporter     User        @relation("Reporter", fields: [reporterId], references: [id])
+  reportedUser User?       @relation("ReportedUser", fields: [reportedUserId], references: [id])
+  submission   Submission? @relation(fields: [submissionId], references: [id])
+
+  @@index([status])
+  @@map("reports")
+}
+
+enum ReportReason {
+  FAKE_IMAGE
+  WRONG_SPECIES
+  INAPPROPRIATE
+  CHEATING
+  SPAM
+  GPS_SPOOF
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+// ─── Notifications ──────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  DISCOVERY
+  ACHIEVEMENT
+  FRIEND_REQUEST
+  CLAN_INVITE
+  QUEST_COMPLETE
+  LEADERBOARD
+  SYSTEM
+  MODERATION
+}
+
+// ─── Device Trust ───────────────────────────────────────────────
+
+model DeviceSession {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  deviceId     String
+  platform     String?
+  userAgent    String?
+  ipAddress    String?
+  trustScore   Float    @default(1.0)
+  isTrusted    Boolean  @default(true)
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([deviceId])
+  @@map("device_sessions")
+}
+
+// ─── Seasonal Events ───────────────────────────────────────────
+
+model Season {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean  @default(false)
+  rewards     Json?
+  createdAt   DateTime @default(now())
+
+  @@map("seasons")
+}
