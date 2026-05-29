@@ -54,43 +54,58 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
 
     setSubmissionError(null);
 
-    // Get GPS if not already available
-    let coords = position;
-    if (!coords) {
-      try {
-        coords = await getCurrentPosition();
-      } catch {
-        // Continue without GPS
+    try {
+      // Get GPS if not already available
+      let coords = position;
+      if (!coords) {
+        try {
+          coords = await getCurrentPosition();
+        } catch {
+          // Continue without GPS
+        }
       }
-    }
 
-    const result = await submit(capturedImage, coords?.latitude, coords?.longitude);
+      const result = await submit(capturedImage, coords?.latitude, coords?.longitude);
 
-    if (result?.queued) {
-      toast.success('Photo queued — will identify when back online');
-      handleReset();
-      onClose();
-      return;
-    }
+      if (result?.queued) {
+        toast.success('Photo queued — will identify when back online');
+        handleReset();
+        onClose();
+        return;
+      }
 
-    if (result?.success && result?.data) {
-      const data = result.data as Record<string, unknown>;
-      setSubmissionResult(data);
-      setMode('result');
-      onSuccess(result);
+      if (result?.success && result?.data) {
+        const data = result.data as Record<string, unknown>;
 
-      const species = data.species as { commonName?: string; scientificName?: string; rarityTier?: string } | undefined;
-      const speciesName = species?.commonName || species?.scientificName || 'Unknown';
-      const isFirst = data.isFirstDiscovery;
-      const points = data.pointsAwarded as number;
+        // Check if the submission was actually identified (not just queued/pending)
+        if (data.status === 'PENDING') {
+          setSubmissionError('AI service is warming up. Please try again in a moment.');
+          toast.error('AI service is warming up. Please try again in a moment.', { duration: 4000 });
+          return;
+        }
 
-      if (isFirst) {
-        toast.success(`New discovery: ${speciesName}! +${points} pts`, { duration: 4000 });
+        setSubmissionResult(data);
+        setMode('result');
+        onSuccess(result);
+
+        const species = data.species as { commonName?: string; scientificName?: string; rarityTier?: string } | undefined;
+        const speciesName = species?.commonName || species?.scientificName || 'Unknown';
+        const isFirst = data.isFirstDiscovery;
+        const points = data.pointsAwarded as number;
+
+        if (isFirst) {
+          toast.success(`New discovery: ${speciesName}! +${points} pts`, { duration: 4000 });
+        } else {
+          toast(`${speciesName} — already in your collection`, { icon: '📋', duration: 3000 });
+        }
       } else {
-        toast(`${speciesName} — already in your collection`, { icon: '📋', duration: 3000 });
+        const errorMsg = result?.error || 'Identification failed. Try again.';
+        setSubmissionError(errorMsg);
+        toast.error(errorMsg, { duration: 4000 });
       }
-    } else {
-      const errorMsg = result?.error || 'Identification failed. Try again.';
+    } catch (err) {
+      console.error('Submit error:', err);
+      const errorMsg = 'Something went wrong. Please try again.';
       setSubmissionError(errorMsg);
       toast.error(errorMsg, { duration: 4000 });
     }

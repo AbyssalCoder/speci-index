@@ -8,6 +8,7 @@
  */
 
 import { getAdminClient } from '@/lib/supabase/admin';
+import { validateImage } from '@/lib/ai-service';
 
 interface SubmissionValidation {
   imageBase64: string;
@@ -63,15 +64,7 @@ export async function validateSubmission(input: SubmissionValidation): Promise<V
   // 5. Perceptual Hash Duplicate Check
   let perceptualHash: string | null = null;
   try {
-    const aiResponse = await fetch(`${process.env.AI_SERVICE_URL}/validate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.AI_SERVICE_API_KEY}`,
-      },
-      body: JSON.stringify({ image: input.imageBase64 }),
-    });
-    const aiValidation = await aiResponse.json();
+    const aiValidation = await validateImage(input.imageBase64);
 
     perceptualHash = aiValidation.perceptualHash || null;
 

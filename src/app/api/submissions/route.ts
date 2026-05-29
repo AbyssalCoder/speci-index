@@ -5,6 +5,9 @@ import { z } from 'zod';
 import { validateSubmission } from '@/lib/anticheat';
 import { checkRestrictedZone } from '@/lib/geofencing';
 import { calculateRarityPoints, getRarityTierFromPoints } from '@/lib/rarity';
+import { identifySpecies } from '@/lib/ai-service';
+
+export const maxDuration = 60;
 
 const submitSchema = z.object({
   imageBase64: z.string().min(1),
@@ -137,15 +140,7 @@ export async function POST(req: NextRequest) {
     // AI Species Identification
     let aiResult: any;
     try {
-      const aiResponse = await fetch(`${process.env.AI_SERVICE_URL}/identify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.AI_SERVICE_API_KEY}`,
-        },
-        body: JSON.stringify({ image: imageBase64 }),
-      });
-      aiResult = await aiResponse.json();
+      aiResult = await identifySpecies(imageBase64);
     } catch {
       await admin
         .from('submissions')
