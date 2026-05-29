@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const registerSchema = z.object({
@@ -31,8 +31,15 @@ export async function POST(req: NextRequest) {
 
     const { username, displayName, country, state } = parsed.data;
 
+    const admin = getAdminClient();
+
     // Check username uniqueness
-    const existing = await prisma.user.findUnique({ where: { username } });
+    const { data: existing } = await admin
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .maybeSingle();
+
     if (existing) {
       return NextResponse.json(
         { success: false, error: 'Username already taken' },
@@ -40,16 +47,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const profile = await prisma.user.create({
-      data: {
+    const { data: profile, error } = await admin
+      .from('users')
+      .insert({
         id: user.id,
-        email: user.email!,
+        email: user.email,
         username,
         displayName,
-        country,
-        state,
-      },
-    });
+        country: country || null,
+        state: state || null,
+        updatedAt: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Registration insert error:', error);
+      return NextResponse.json(
+        { success: false, error: 'Profile creation failed' },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({ success: true, data: profile });
   } catch (error) {

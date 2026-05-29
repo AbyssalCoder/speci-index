@@ -79,7 +79,8 @@ export async function POST(req: NextRequest) {
         id: authData.user.id,
         email,
         username,
-        display_name: displayName,
+        displayName,
+        updatedAt: new Date().toISOString(),
       });
 
     if (profileError) {

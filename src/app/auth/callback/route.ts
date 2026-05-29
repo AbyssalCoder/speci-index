@@ -58,8 +58,9 @@ export async function GET(request: NextRequest) {
               id: user.id,
               email: user.email,
               username: cleanUsername,
-              display_name: displayName.slice(0, 50),
-              avatar_url: meta?.avatar_url || null,
+              displayName: displayName.slice(0, 50),
+              avatarUrl: meta?.avatar_url || null,
+              updatedAt: new Date().toISOString(),
             });
 
           if (insertError) {
@@ -71,8 +72,9 @@ export async function GET(request: NextRequest) {
                 id: user.id,
                 email: user.email,
                 username: fallbackUsername,
-                display_name: displayName.slice(0, 50),
-                avatar_url: meta?.avatar_url || null,
+                displayName: displayName.slice(0, 50),
+                avatarUrl: meta?.avatar_url || null,
+                updatedAt: new Date().toISOString(),
               });
           }
         }

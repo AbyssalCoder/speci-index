@@ -56,7 +56,8 @@ export async function GET(request: NextRequest) {
               id: user.id,
               email: user.email,
               username: username.slice(0, 30).replace(/[^a-zA-Z0-9_]/g, '_'),
-              display_name: displayName.slice(0, 50),
+              displayName: displayName.slice(0, 50),
+              updatedAt: new Date().toISOString(),
             });
         }
       }

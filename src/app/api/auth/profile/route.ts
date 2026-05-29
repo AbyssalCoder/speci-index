@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,26 +11,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const profile = await prisma.user.findUnique({
-      where: { id: user.id },
-      select: {
-        id: true,
-        username: true,
-        displayName: true,
-        avatarUrl: true,
-        bio: true,
-        country: true,
-        state: true,
-        totalPoints: true,
-        speciesCount: true,
-        level: true,
-        xp: true,
-        role: true,
-        createdAt: true,
-      },
-    });
+    const admin = getAdminClient();
+    const { data: profile, error } = await admin
+      .from('users')
+      .select('id, username, displayName, avatarUrl, bio, country, state, totalPoints, speciesCount, level, xp, role, createdAt')
+      .eq('id', user.id)
+      .single();
 
-    if (!profile) {
+    if (error || !profile) {
       return NextResponse.json(
         { success: false, error: 'Profile not found' },
         { status: 404 }
