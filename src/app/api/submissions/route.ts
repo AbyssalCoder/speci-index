@@ -65,11 +65,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Upload image to Supabase Storage
+    // Upload image to Supabase Storage (use admin client to bypass RLS)
     const imageBuffer = Buffer.from(imageBase64, 'base64');
     const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
 
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await admin.storage
       .from('submissions')
       .upload(fileName, imageBuffer, {
         contentType: 'image/jpeg',
@@ -77,13 +77,14 @@ export async function POST(req: NextRequest) {
       });
 
     if (uploadError) {
+      console.error('Storage upload error:', uploadError);
       return NextResponse.json(
         { success: false, error: 'Image upload failed' },
         { status: 500 }
       );
     }
 
-    const { data: { publicUrl } } = supabase.storage
+    const { data: { publicUrl } } = admin.storage
       .from('submissions')
       .getPublicUrl(fileName);
 

@@ -13,7 +13,6 @@ export default function ProfilePage() {
   const user = useAppStore((s) => s.user);
   const collection = useAppStore((s) => s.collection);
   const router = useRouter();
-  const supabase = createClient();
 
   useEffect(() => {
     if (!user) {
@@ -36,6 +35,7 @@ export default function ProfilePage() {
   }, {});
 
   const handleLogout = async () => {
+    const supabase = createClient();
     await supabase.auth.signOut();
     useAppStore.getState().setUser(null);
     router.push('/');

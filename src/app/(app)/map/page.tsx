@@ -9,6 +9,7 @@ import type { MapMarker, RestrictedZoneInfo } from '@/types';
 export default function MapPage() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
+  const maplibreRef = useRef<any>(null);
   const [loading, setLoading] = useState(true);
   const [markers, setMarkers] = useState<MapMarker[]>([]);
   const [zones, setZones] = useState<RestrictedZoneInfo[]>([]);
@@ -16,6 +17,7 @@ export default function MapPage() {
   useEffect(() => {
     async function initMap() {
       const maplibregl = (await import('maplibre-gl')).default;
+      maplibreRef.current = maplibregl;
 
       if (!mapContainer.current) return;
 
@@ -99,7 +101,7 @@ export default function MapPage() {
     const existingMarkers = document.querySelectorAll('.species-marker');
     existingMarkers.forEach((m) => m.remove());
 
-    const maplibregl = (window as any).maplibregl;
+    const maplibregl = maplibreRef.current;
     if (!maplibregl) return;
 
     markers.forEach((marker) => {

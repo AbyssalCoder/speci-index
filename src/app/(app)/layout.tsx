@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { BottomNav, TopBar } from '@/components/layout/navigation';
 import { useAppStore } from '@/stores/app-store';
 import { Toaster } from 'react-hot-toast';
+import { useRouter } from 'next/navigation';
 
 const CaptureModal = dynamic(
   () => import('@/components/capture/capture-modal').then((m) => m.CaptureModal),
@@ -14,6 +15,8 @@ const CaptureModal = dynamic(
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const isCaptureOpen = useAppStore((s) => s.isCaptureOpen);
   const setCaptureOpen = useAppStore((s) => s.setCaptureOpen);
+  const fetchProfile = useAppStore((s) => s.fetchProfile);
+  const router = useRouter();
 
   return (
     <div className="min-h-dvh bg-surface-0 pb-20">
@@ -37,8 +40,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <CaptureModal
         isOpen={isCaptureOpen}
         onClose={() => setCaptureOpen(false)}
-        onSuccess={(result) => {
-          console.log('Submission result:', result);
+        onSuccess={() => {
+          // Refresh user profile data (points, species count, etc.)
+          fetchProfile();
+          router.refresh();
         }}
       />
     </div>

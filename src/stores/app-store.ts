@@ -5,6 +5,7 @@ interface AppState {
   // User
   user: UserProfile | null;
   setUser: (user: UserProfile | null) => void;
+  fetchProfile: () => Promise<void>;
 
   // Collection
   collection: DiscoveryEntry[];
@@ -33,6 +34,17 @@ interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   user: null,
   setUser: (user) => set({ user }),
+  fetchProfile: async () => {
+    try {
+      const res = await fetch('/api/auth/profile');
+      const data = await res.json();
+      if (data.success && data.data) {
+        set({ user: data.data });
+      }
+    } catch {
+      // Silently fail
+    }
+  },
 
   collection: [],
   setCollection: (items) => set({ collection: items }),

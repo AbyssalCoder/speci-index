@@ -2,10 +2,11 @@
 
 import React, { useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, Upload, X, RotateCcw, Zap, MapPin, Loader2 } from 'lucide-react';
+import { Camera, Upload, X, RotateCcw, Zap, MapPin, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { Button, GlassCard } from '@/components/ui';
 import { useCamera, useGeolocation, useSubmission } from '@/hooks/use-capture';
 import { cn } from '@/lib/utils';
+import toast from 'react-hot-toast';
 
 interface CaptureModalProps {
   isOpen: boolean;
@@ -19,7 +20,9 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
   const { submit, isSubmitting } = useSubmission();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [mode, setMode] = useState<'select' | 'camera' | 'preview'>('select');
+  const [mode, setMode] = useState<'select' | 'camera' | 'preview' | 'result'>('select');
+  const [submissionResult, setSubmissionResult] = useState<Record<string, unknown> | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   const handleCapture = useCallback(() => {
     const base64 = capture();
@@ -49,6 +52,8 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
   const handleSubmit = useCallback(async () => {
     if (!capturedImage) return;
 
+    setSubmissionError(null);
+
     // Get GPS if not already available
     let coords = position;
     if (!coords) {
@@ -60,16 +65,42 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
     }
 
     const result = await submit(capturedImage, coords?.latitude, coords?.longitude);
-    if (result?.success || result?.queued) {
-      onSuccess(result);
+
+    if (result?.queued) {
+      toast.success('Photo queued — will identify when back online');
       handleReset();
       onClose();
+      return;
+    }
+
+    if (result?.success && result?.data) {
+      const data = result.data as Record<string, unknown>;
+      setSubmissionResult(data);
+      setMode('result');
+      onSuccess(result);
+
+      const species = data.species as { commonName?: string; scientificName?: string; rarityTier?: string } | undefined;
+      const speciesName = species?.commonName || species?.scientificName || 'Unknown';
+      const isFirst = data.isFirstDiscovery;
+      const points = data.pointsAwarded as number;
+
+      if (isFirst) {
+        toast.success(`New discovery: ${speciesName}! +${points} pts`, { duration: 4000 });
+      } else {
+        toast(`${speciesName} — already in your collection`, { icon: '📋', duration: 3000 });
+      }
+    } else {
+      const errorMsg = result?.error || 'Identification failed. Try again.';
+      setSubmissionError(errorMsg);
+      toast.error(errorMsg, { duration: 4000 });
     }
   }, [capturedImage, position, getCurrentPosition, submit, onSuccess, onClose]);
 
   const handleReset = useCallback(() => {
     setCapturedImage(null);
     setMode('select');
+    setSubmissionResult(null);
+    setSubmissionError(null);
     stop();
   }, [stop]);
 
@@ -233,6 +264,13 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
                     </div>
                   )}
 
+                  {submissionError && (
+                    <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+                      <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0" />
+                      <p className="text-sm text-red-300">{submissionError}</p>
+                    </div>
+                  )}
+
                   <div className="flex gap-3">
                     <Button variant="secondary" size="lg" className="flex-1" onClick={handleReset}>
                       Retake
@@ -244,10 +282,80 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
                       onClick={handleSubmit}
                       isLoading={isSubmitting}
                     >
-                      {isSubmitting ? 'Identifying...' : 'Identify Species'}
+                      {isSubmitting ? 'Identifying...' : submissionError ? 'Try Again' : 'Identify Species'}
                     </Button>
                   </div>
                 </div>
+              </motion.div>
+            )}
+
+            {mode === 'result' && submissionResult && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="flex-1 flex flex-col items-center justify-center p-8"
+              >
+                {(() => {
+                  const species = submissionResult.species as { commonName?: string; scientificName?: string; rarityTier?: string; category?: string } | undefined;
+                  const isFirst = submissionResult.isFirstDiscovery as boolean;
+                  const points = submissionResult.pointsAwarded as number;
+                  const confidence = submissionResult.aiConfidence as number;
+
+                  return (
+                    <div className="text-center space-y-4 w-full max-w-xs">
+                      <div className={cn(
+                        "w-20 h-20 rounded-full flex items-center justify-center mx-auto",
+                        isFirst ? "bg-brand-600/20" : "bg-gray-600/20"
+                      )}>
+                        <CheckCircle className={cn("h-10 w-10", isFirst ? "text-brand-400" : "text-gray-400")} />
+                      </div>
+
+                      <div>
+                        <h3 className="text-xl font-display font-bold text-white">
+                          {isFirst ? 'New Discovery!' : 'Already Collected'}
+                        </h3>
+                        <p className="text-brand-400 font-semibold mt-1">
+                          {species?.commonName || species?.scientificName || 'Unknown Species'}
+                        </p>
+                        {species?.scientificName && species?.commonName && (
+                          <p className="text-gray-500 text-sm italic">{species.scientificName}</p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-center gap-4 text-sm">
+                        {species?.rarityTier && (
+                          <span className={cn(
+                            "px-2 py-1 rounded-full text-xs font-bold",
+                            species.rarityTier === 'COMMON' && "bg-gray-600/30 text-gray-300",
+                            species.rarityTier === 'UNCOMMON' && "bg-green-600/30 text-green-300",
+                            species.rarityTier === 'RARE' && "bg-blue-600/30 text-blue-300",
+                            species.rarityTier === 'EPIC' && "bg-purple-600/30 text-purple-300",
+                            species.rarityTier === 'LEGENDARY' && "bg-orange-600/30 text-orange-300",
+                            species.rarityTier === 'MYTHIC' && "bg-red-600/30 text-red-300",
+                          )}>
+                            {species.rarityTier}
+                          </span>
+                        )}
+                        {confidence && (
+                          <span className="text-gray-400">{(confidence * 100).toFixed(0)}% match</span>
+                        )}
+                      </div>
+
+                      {isFirst && points > 0 && (
+                        <div className="text-2xl font-bold text-brand-400">+{points} pts</div>
+                      )}
+
+                      <div className="flex gap-3 pt-4">
+                        <Button variant="secondary" size="lg" className="flex-1" onClick={() => { handleReset(); }}>
+                          Capture More
+                        </Button>
+                        <Button variant="default" size="lg" className="flex-1" onClick={() => { handleReset(); onClose(); }}>
+                          Done
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </motion.div>
             )}
           </div>
