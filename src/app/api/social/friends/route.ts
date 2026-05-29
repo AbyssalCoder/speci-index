@@ -4,8 +4,13 @@ import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const friendRequestSchema = z.object({
-  receiverId: z.string().uuid(),
-});
+  receiverId: z.string().uuid().optional(),
+  email: z.string().email().optional(),
+  username: z.string().min(1).optional(),
+}).refine(
+  (data) => data.receiverId || data.email || data.username,
+  { message: 'Provide receiverId, email, or username' }
+);
 
 // Send friend request
 export async function POST(req: NextRequest) {
@@ -17,20 +22,51 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const parsed = friendRequestSchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json({ success: false, error: 'Invalid input' }, { status: 400 });
-    }
-
-    if (parsed.data.receiverId === user.id) {
-      return NextResponse.json({ success: false, error: 'Cannot send request to yourself' }, { status: 400 });
+      return NextResponse.json({ success: false, error: 'Please provide an email or username' }, { status: 400 });
     }
 
     const admin = getAdminClient();
+
+    // Resolve the receiver ID
+    let receiverId = parsed.data.receiverId;
+
+    if (!receiverId && parsed.data.email) {
+      const { data: receiver } = await admin
+        .from('users')
+        .select('id')
+        .eq('email', parsed.data.email)
+        .maybeSingle();
+      if (!receiver) {
+        return NextResponse.json({ success: false, error: 'No user found with that email' }, { status: 404 });
+      }
+      receiverId = receiver.id;
+    }
+
+    if (!receiverId && parsed.data.username) {
+      const { data: receiver } = await admin
+        .from('users')
+        .select('id')
+        .eq('username', parsed.data.username)
+        .maybeSingle();
+      if (!receiver) {
+        return NextResponse.json({ success: false, error: 'No user found with that username' }, { status: 404 });
+      }
+      receiverId = receiver.id;
+    }
+
+    if (!receiverId) {
+      return NextResponse.json({ success: false, error: 'Could not find user' }, { status: 404 });
+    }
+
+    if (receiverId === user.id) {
+      return NextResponse.json({ success: false, error: 'Cannot send request to yourself' }, { status: 400 });
+    }
 
     // Check if already friends
     const { data: existingFriendship } = await admin
       .from('friendships')
       .select('id')
-      .or(`and(userAId.eq.${user.id},userBId.eq.${parsed.data.receiverId}),and(userAId.eq.${parsed.data.receiverId},userBId.eq.${user.id})`)
+      .or(`and(userAId.eq.${user.id},userBId.eq.${receiverId}),and(userAId.eq.${receiverId},userBId.eq.${user.id})`)
       .maybeSingle();
 
     if (existingFriendship) {
@@ -42,7 +78,7 @@ export async function POST(req: NextRequest) {
       .from('friend_requests')
       .select('id')
       .eq('status', 'PENDING')
-      .or(`and(senderId.eq.${user.id},receiverId.eq.${parsed.data.receiverId}),and(senderId.eq.${parsed.data.receiverId},receiverId.eq.${user.id})`)
+      .or(`and(senderId.eq.${user.id},receiverId.eq.${receiverId}),and(senderId.eq.${receiverId},receiverId.eq.${user.id})`)
       .maybeSingle();
 
     if (existing) {
@@ -51,7 +87,7 @@ export async function POST(req: NextRequest) {
 
     const { data: request, error: reqError } = await admin
       .from('friend_requests')
-      .insert({ senderId: user.id, receiverId: parsed.data.receiverId, updatedAt: new Date().toISOString() })
+      .insert({ senderId: user.id, receiverId, updatedAt: new Date().toISOString() })
       .select()
       .single();
 
@@ -61,7 +97,7 @@ export async function POST(req: NextRequest) {
     await admin
       .from('notifications')
       .insert({
-        userId: parsed.data.receiverId,
+        userId: receiverId,
         type: 'FRIEND_REQUEST',
         title: 'New Friend Request',
         body: 'You received a friend request',

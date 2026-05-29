@@ -90,38 +90,10 @@ export interface ValidateResult {
 
 /**
  * Identify species from a base64 image.
- * Tries the external AI service first (with timeout), falls back to local logic.
+ * Uses local beta identification for instant results.
  */
 export async function identifySpecies(imageBase64: string): Promise<IdentifyResult> {
-  const aiUrl = process.env.AI_SERVICE_URL;
-  const aiKey = process.env.AI_SERVICE_API_KEY;
-
-  // Try external AI service if configured
-  if (aiUrl && aiUrl !== 'undefined') {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const res = await fetch(`${aiUrl}/identify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(aiKey ? { Authorization: `Bearer ${aiKey}` } : {}),
-        },
-        body: JSON.stringify({ image: imageBase64 }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // External service unavailable — fall through to local
-    }
-  }
-
-  // Local fallback: deterministic species selection from image hash
+  // Local beta identification: deterministic species selection from image hash
   const hash = simpleHash(imageBase64);
   const speciesIndex = hash % SPECIES_DB.length;
   const species = SPECIES_DB[speciesIndex];
@@ -150,38 +122,10 @@ export async function identifySpecies(imageBase64: string): Promise<IdentifyResu
 
 /**
  * Validate an image for anti-cheat purposes.
- * Tries the external AI service first (with timeout), falls back to local logic.
+ * Uses local beta validation for instant results.
  */
 export async function validateImage(imageBase64: string): Promise<ValidateResult> {
-  const aiUrl = process.env.AI_SERVICE_URL;
-  const aiKey = process.env.AI_SERVICE_API_KEY;
-
-  // Try external AI service if configured
-  if (aiUrl && aiUrl !== 'undefined') {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-
-      const res = await fetch(`${aiUrl}/validate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(aiKey ? { Authorization: `Bearer ${aiKey}` } : {}),
-        },
-        body: JSON.stringify({ image: imageBase64 }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch {
-      // External service unavailable — fall through to local
-    }
-  }
-
-  // Local fallback: basic validation
+  // Local beta validation
   const isTooBig = imageBase64.length > 20 * 1024 * 1024;
   const isTooSmall = imageBase64.length < 100;
   const perceptualHash = simpleHashHex(imageBase64);
