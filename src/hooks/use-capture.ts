@@ -131,17 +131,33 @@ export function useSubmission() {
           }),
         });
 
+        if (!res.ok) {
+          // Handle HTTP errors (413 body too large, 500, etc.)
+          let errorMsg = `Server error (${res.status})`;
+          try {
+            const errData = await res.json();
+            errorMsg = errData.error || errorMsg;
+          } catch { /* ignore parse error */ }
+          setError(errorMsg);
+          return { success: false, error: errorMsg };
+        }
+
         const data = await res.json();
         if (!data.success) {
           setError(data.error || 'Submission failed');
         }
         setResult(data.data);
         return data;
-      } catch {
-        // Offline — queue for later
-        addToQueue({ imageBase64, latitude, longitude });
-        setError('No connection. Queued for later.');
-        return { queued: true };
+      } catch (err) {
+        console.error('Submission fetch error:', err);
+        if (!navigator.onLine) {
+          addToQueue({ imageBase64, latitude, longitude });
+          setError('No connection. Queued for later.');
+          return { queued: true };
+        }
+        const errorMsg = 'Request failed. Please try again.';
+        setError(errorMsg);
+        return { success: false, error: errorMsg };
       } finally {
         setIsSubmitting(false);
       }

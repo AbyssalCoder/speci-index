@@ -24,16 +24,47 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
   const [submissionResult, setSubmissionResult] = useState<Record<string, unknown> | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
 
-  const handleCapture = useCallback(() => {
+  // Compress image to fit within Vercel's 4.5MB body limit
+  const compressImage = useCallback((base64: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_DIM = 1024;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(base64); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+        resolve(compressed);
+      };
+      img.onerror = () => resolve(base64);
+      img.src = `data:image/jpeg;base64,${base64}`;
+    });
+  }, []);
+
+  const handleCapture = useCallback(async () => {
     const base64 = capture();
     if (base64) {
-      setCapturedImage(base64);
+      const compressed = await compressImage(base64);
+      setCapturedImage(compressed);
       stop();
       setMode('preview');
     }
-  }, [capture, stop]);
+  }, [capture, stop, compressImage]);
 
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -41,13 +72,14 @@ export function CaptureModal({ isOpen, onClose, onSuccess }: CaptureModalProps) 
     if (file.size > 20 * 1024 * 1024) return;
 
     const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = (reader.result as string).split(',')[1];
-      setCapturedImage(base64);
+    reader.onload = async () => {
+      const raw = (reader.result as string).split(',')[1];
+      const compressed = await compressImage(raw);
+      setCapturedImage(compressed);
       setMode('preview');
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, [compressImage]);
 
   const handleSubmit = useCallback(async () => {
     if (!capturedImage) return;
