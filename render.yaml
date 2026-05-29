@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: speci-index-ai
+    runtime: docker
+    dockerfilePath: ./ai-service/Dockerfile
+    dockerContext: ./ai-service
+    region: singapore
+    plan: free
+    envVars:
+      - key: AI_SERVICE_API_KEY
+        value: speci-index-ai-key-2026
+      - key: ALLOWED_ORIGIN
+        value: https://speci-index.vercel.app
+    healthCheckPath: /health
