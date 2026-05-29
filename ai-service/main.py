@@ -7,6 +7,7 @@ import os
 import io
 import base64
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -29,6 +30,39 @@ identifier: Optional[SpeciesIdentifier] = None
 validator: Optional[ImageValidator] = None
 fraud_detector: Optional[FraudDetector] = None
 
+# Self-ping task to prevent Render free tier sleep (every 14 min)
+async def self_ping():
+    import httpx
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+    interval_render = 14 * 60   # 14 minutes
+    interval_supabase = 2 * 60 * 60  # 2 hours
+    tick = 0
+    while True:
+        await asyncio.sleep(interval_render)
+        tick += 1
+        # Ping self (Render keep-alive)
+        if render_url:
+            try:
+                async with httpx.AsyncClient() as c:
+                    r = await c.get(f"{render_url}/health", timeout=10)
+                    logger.info(f"Self-ping: {r.status_code}")
+            except Exception as e:
+                logger.warning(f"Self-ping failed: {e}")
+        # Ping Supabase every ~2 hours (every 8th tick at 14-min intervals ≈ 112 min)
+        if tick % 8 == 0 and supabase_url and supabase_key:
+            try:
+                async with httpx.AsyncClient() as c:
+                    r = await c.get(
+                        f"{supabase_url}/rest/v1/",
+                        headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
+                        timeout=10,
+                    )
+                    logger.info(f"Supabase ping: {r.status_code}")
+            except Exception as e:
+                logger.warning(f"Supabase ping failed: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,7 +72,10 @@ async def lifespan(app: FastAPI):
     validator = ImageValidator()
     fraud_detector = FraudDetector()
     logger.info("AI models loaded successfully")
+    # Start self-ping background task
+    ping_task = asyncio.create_task(self_ping())
     yield
+    ping_task.cancel()
     logger.info("Shutting down AI service")
 
 
