@@ -19,8 +19,17 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get('redirect') || '/dashboard';
+  const errorParam = searchParams.get('error');
 
   const supabase = createClient();
+
+  React.useEffect(() => {
+    if (errorParam === 'auth_failed') {
+      toast.error('Authentication failed. Please try again.');
+    } else if (errorParam === 'confirmation_failed') {
+      toast.error('Email confirmation failed. Please try again.');
+    }
+  }, [errorParam]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,28 +58,29 @@ function LoginForm() {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) {
-        toast.error(error.message);
+      // Server-side signup with auto-confirm
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, username, displayName: displayName || username }),
+      });
+      const result = await res.json();
+
+      if (!result.success) {
+        toast.error(result.error || 'Sign up failed');
         return;
       }
 
-      // Create user profile
-      if (data.user) {
-        const res = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, displayName: displayName || username }),
-        });
-        const result = await res.json();
-        if (!result.success) {
-          toast.error(result.error || 'Profile creation failed');
-          return;
-        }
+      // Auto sign in after signup
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        toast.success('Account created! Please sign in.');
+        setIsSignUp(false);
+        return;
       }
 
-      toast.success('Account created! Check your email to verify.');
-      setIsSignUp(false);
+      toast.success('Account created!');
+      router.push(redirect);
     } catch {
       toast.error('Sign up failed');
     } finally {
@@ -79,11 +89,21 @@ function LoginForm() {
   };
 
   const handleOAuth = async (provider: 'google' | 'github') => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: { redirectTo: `${window.location.origin}/auth/callback?redirect=${redirect}` },
-    });
-    if (error) toast.error(error.message);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: `${window.location.origin}/auth/callback?redirect=${redirect}` },
+      });
+      if (error) {
+        if (error.message.includes('not enabled') || error.message.includes('not supported')) {
+          toast.error(`${provider.charAt(0).toUpperCase() + provider.slice(1)} sign-in is not configured yet`);
+        } else {
+          toast.error(error.message);
+        }
+      }
+    } catch {
+      toast.error('OAuth sign-in failed');
+    }
   };
 
   return (
