@@ -15,6 +15,17 @@ export default function ProfilePage() {
   const router = useRouter();
   const supabase = createClient();
 
+  useEffect(() => {
+    if (!user) {
+      fetch('/api/auth/profile')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success) useAppStore.getState().setUser(data.data);
+        })
+        .catch(() => {});
+    }
+  }, [user]);
+
   const levelInfo = user ? calculateLevel(user.xp) : null;
 
   // Category breakdown
