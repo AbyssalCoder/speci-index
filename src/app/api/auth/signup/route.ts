@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { prisma } from '@/lib/db';
 import { z } from 'zod';
 
 const signupSchema = z.object({
@@ -24,8 +23,20 @@ export async function POST(req: NextRequest) {
 
     const { email, password, username, displayName } = parsed.data;
 
-    // Check username uniqueness
-    const existing = await prisma.user.findUnique({ where: { username } });
+    // Use admin client (HTTP-based, works from Vercel)
+    const adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
+    // Check username uniqueness via REST API
+    const { data: existing } = await adminClient
+      .from('users')
+      .select('id')
+      .eq('username', username)
+      .maybeSingle();
+
     if (existing) {
       return NextResponse.json(
         { success: false, error: 'Username already taken' },
@@ -33,13 +44,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Use admin client to create user with auto-confirmed email
-    const adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { autoRefreshToken: false, persistSession: false } }
-    );
-
+    // Create auth user with auto-confirmed email
     const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
       email,
       password,
@@ -67,15 +72,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Create profile in database
-    await prisma.user.create({
-      data: {
+    // Create profile in database via REST API
+    const { error: profileError } = await adminClient
+      .from('users')
+      .insert({
         id: authData.user.id,
         email,
         username,
-        displayName,
-      },
-    });
+        display_name: displayName,
+      });
+
+    if (profileError) {
+      console.error('Profile insert error:', profileError);
+      // Try to clean up the auth user
+      await adminClient.auth.admin.deleteUser(authData.user.id);
+      return NextResponse.json(
+        { success: false, error: 'Profile creation failed' },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

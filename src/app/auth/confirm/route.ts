@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { prisma } from '@/lib/db';
+import { createClient } from '@supabase/supabase-js';
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
@@ -30,27 +30,34 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.verifyOtp({ token_hash, type });
 
     if (!error) {
-      // Create profile from metadata if it doesn't exist
+      // Create profile from metadata if it doesn't exist (via REST API)
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        const existingProfile = await prisma.user.findUnique({ where: { id: user.id } });
-        if (!existingProfile) {
+        const adminClient = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+          { auth: { autoRefreshToken: false, persistSession: false } }
+        );
+
+        const { data: existing } = await adminClient
+          .from('users')
+          .select('id')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (!existing) {
           const meta = user.user_metadata;
           const username = meta?.username || `user_${user.id.slice(0, 8)}`;
           const displayName = meta?.display_name || username;
 
-          try {
-            await prisma.user.create({
-              data: {
-                id: user.id,
-                email: user.email!,
-                username: username.slice(0, 30).replace(/[^a-zA-Z0-9_]/g, '_'),
-                displayName: displayName.slice(0, 50),
-              },
+          await adminClient
+            .from('users')
+            .insert({
+              id: user.id,
+              email: user.email,
+              username: username.slice(0, 30).replace(/[^a-zA-Z0-9_]/g, '_'),
+              display_name: displayName.slice(0, 50),
             });
-          } catch {
-            console.error('Profile creation failed during email confirm');
-          }
         }
       }
 
