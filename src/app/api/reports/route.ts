@@ -26,9 +26,9 @@ export async function POST(req: NextRequest) {
     const { data: report, error } = await admin
       .from('reports')
       .insert({
+        id: crypto.randomUUID(),
         reporterId: user.id,
         ...parsed.data,
-        updatedAt: new Date().toISOString(),
       })
       .select('id')
       .single();

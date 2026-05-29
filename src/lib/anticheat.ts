@@ -247,6 +247,7 @@ async function checkDeviceTrust(
     await admin
       .from('device_sessions')
       .insert({
+        id: crypto.randomUUID(),
         userId,
         deviceId: deviceInfo.deviceId,
         platform: deviceInfo.platform ?? null,

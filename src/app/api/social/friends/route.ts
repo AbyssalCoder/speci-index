@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
 
     const { data: request, error: reqError } = await admin
       .from('friend_requests')
-      .insert({ senderId: user.id, receiverId, updatedAt: new Date().toISOString() })
+      .insert({ id: crypto.randomUUID(), senderId: user.id, receiverId })
       .select()
       .single();
 
@@ -97,6 +97,7 @@ export async function POST(req: NextRequest) {
     await admin
       .from('notifications')
       .insert({
+        id: crypto.randomUUID(),
         userId: receiverId,
         type: 'FRIEND_REQUEST',
         title: 'New Friend Request',
@@ -177,19 +178,20 @@ export async function PATCH(req: NextRequest) {
     if (action === 'accept') {
       await admin
         .from('friend_requests')
-        .update({ status: 'ACCEPTED', updatedAt: new Date().toISOString() })
+        .update({ status: 'ACCEPTED' })
         .eq('id', requestId);
 
       await admin
         .from('friendships')
         .insert({
+          id: crypto.randomUUID(),
           userAId: request.senderId,
           userBId: request.receiverId,
         });
     } else {
       await admin
         .from('friend_requests')
-        .update({ status: 'REJECTED', updatedAt: new Date().toISOString() })
+        .update({ status: 'REJECTED' })
         .eq('id', requestId);
     }
 

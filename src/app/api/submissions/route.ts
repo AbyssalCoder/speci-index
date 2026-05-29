@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
     const { data: submission, error: subError } = await admin
       .from('submissions')
       .insert({
+        id: crypto.randomUUID(),
         userId: user.id,
         imageUrl: publicUrl,
         status: 'PROCESSING',
@@ -217,6 +218,7 @@ export async function POST(req: NextRequest) {
       const { data: newSpecies } = await admin
         .from('species')
         .insert({
+          id: crypto.randomUUID(),
           scientificName: aiResult.species.scientificName,
           commonName: aiResult.species.commonName,
           category: aiResult.species.category ?? 'OTHER',
@@ -280,17 +282,21 @@ export async function POST(req: NextRequest) {
 
     // Create discovery + update user stats (only if first discovery)
     if (isFirstDiscovery) {
-      await admin
+      const { error: discError } = await admin
         .from('discoveries')
         .insert({
+          id: crypto.randomUUID(),
           userId: user.id,
           speciesId: species.id,
           pointsEarned: pointsAwarded,
           latitude: latitude ?? null,
           longitude: longitude ?? null,
           submissionId: submission.id,
-          updatedAt: new Date().toISOString(),
         });
+
+      if (discError) {
+        console.error('Discovery insert error:', discError);
+      }
 
       // Fetch current user stats and increment
       const { data: currentUser } = await admin

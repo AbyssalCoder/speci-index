@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
     const { data: clan, error: clanError } = await admin
       .from('clans')
       .insert({
+        id: crypto.randomUUID(),
         ...parsed.data,
         memberCount: 1,
         updatedAt: new Date().toISOString(),
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
     // Add user as leader
     await admin
       .from('clan_members')
-      .insert({ clanId: clan.id, userId: user.id, role: 'LEADER' });
+      .insert({ id: crypto.randomUUID(), clanId: clan.id, userId: user.id, role: 'LEADER' });
 
     return NextResponse.json({ success: true, data: clan });
   } catch (error) {

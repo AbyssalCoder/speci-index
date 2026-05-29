@@ -131,7 +131,6 @@ export async function POST(req: NextRequest) {
           resolvedBy: user.id,
           resolvedNote: note,
           resolvedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
         }).eq('id', reportId);
         return NextResponse.json({ success: true });
       }
