@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
   try {
+    const supabase = getAdminClient();
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
     const search = searchParams.get('search');
@@ -12,40 +13,55 @@ export async function GET(req: NextRequest) {
 
     // Single species lookup
     if (id) {
-      const species = await prisma.species.findUnique({ where: { id } });
+      const { data: species, error } = await supabase
+        .from('species')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (error) throw error;
       if (!species) {
         return NextResponse.json({ success: false, error: 'Species not found' }, { status: 404 });
       }
-      const discoveryCount = await prisma.discovery.count({ where: { speciesId: id } });
+
+      const { count: discoveryCount, error: countError } = await supabase
+        .from('discoveries')
+        .select('*', { count: 'exact', head: true })
+        .eq('speciesId', id);
+
+      if (countError) throw countError;
+
       return NextResponse.json({
         success: true,
-        data: { ...species, discoveryCount },
+        data: { ...species, discoveryCount: discoveryCount ?? 0 },
       });
     }
 
     // List / search
-    const where: Record<string, unknown> = {};
-    if (category) where.category = category;
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
+
+    let query = supabase
+      .from('species')
+      .select('*', { count: 'exact' })
+      .order('commonName', { ascending: true })
+      .range(from, to);
+
+    if (category) {
+      query = query.eq('category', category);
+    }
     if (search) {
-      where.OR = [
-        { commonName: { contains: search, mode: 'insensitive' } },
-        { scientificName: { contains: search, mode: 'insensitive' } },
-      ];
+      query = query.or(`commonName.ilike.%${search}%,scientificName.ilike.%${search}%`);
     }
 
-    const [items, total] = await Promise.all([
-      prisma.species.findMany({
-        where,
-        orderBy: { commonName: 'asc' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      prisma.species.count({ where }),
-    ]);
+    const { data: items, count: total, error } = await query;
+    if (error) throw error;
+
+    const totalCount = total ?? 0;
 
     return NextResponse.json({
       success: true,
-      data: { items, total, page, pageSize, hasMore: page * pageSize < total },
+      data: { items: items ?? [], total: totalCount, page, pageSize, hasMore: page * pageSize < totalCount },
     });
   } catch (error) {
     console.error('Species error:', error);

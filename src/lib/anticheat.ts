@@ -7,7 +7,7 @@
  * - Rate limiting
  */
 
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 
 interface SubmissionValidation {
   imageBase64: string;
@@ -239,21 +239,26 @@ async function checkDeviceTrust(
     return { score, flags };
   }
 
+  const admin = getAdminClient();
+
   // Check if device is known
-  const session = await prisma.deviceSession.findUnique({
-    where: { userId_deviceId: { userId, deviceId: deviceInfo.deviceId } },
-  });
+  const { data: session } = await admin
+    .from('device_sessions')
+    .select('*')
+    .eq('userId', userId)
+    .eq('deviceId', deviceInfo.deviceId)
+    .maybeSingle();
 
   if (!session) {
     // New device — register it
-    await prisma.deviceSession.create({
-      data: {
+    await admin
+      .from('device_sessions')
+      .insert({
         userId,
         deviceId: deviceInfo.deviceId,
-        platform: deviceInfo.platform,
-        userAgent: deviceInfo.userAgent,
-      },
-    });
+        platform: deviceInfo.platform ?? null,
+        userAgent: deviceInfo.userAgent ?? null,
+      });
     flags.push('new_device');
     score += 0.05;
   } else if (!session.isTrusted) {
@@ -261,15 +266,18 @@ async function checkDeviceTrust(
     score += 0.3;
   } else {
     // Update last active
-    await prisma.deviceSession.update({
-      where: { id: session.id },
-      data: { lastActiveAt: new Date() },
-    });
+    await admin
+      .from('device_sessions')
+      .update({ lastActiveAt: new Date().toISOString() })
+      .eq('id', session.id);
   }
 
   // Check number of devices for user
-  const deviceCount = await prisma.deviceSession.count({ where: { userId } });
-  if (deviceCount > 5) {
+  const { count: deviceCount } = await admin
+    .from('device_sessions')
+    .select('id', { count: 'exact', head: true })
+    .eq('userId', userId);
+  if ((deviceCount ?? 0) > 5) {
     flags.push('many_devices');
     score += 0.15;
   }
@@ -281,15 +289,18 @@ async function checkSubmissionVelocity(userId: string): Promise<{ score: number;
   const flags: string[] = [];
   let score = 0;
 
+  const admin = getAdminClient();
   const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-  const recentCount = await prisma.submission.count({
-    where: { userId, createdAt: { gte: fiveMinAgo } },
-  });
+  const { count: recentCount } = await admin
+    .from('submissions')
+    .select('id', { count: 'exact', head: true })
+    .eq('userId', userId)
+    .gte('createdAt', fiveMinAgo.toISOString());
 
-  if (recentCount > 10) {
+  if ((recentCount ?? 0) > 10) {
     flags.push('rapid_submissions');
     score += 0.4;
-  } else if (recentCount > 5) {
+  } else if ((recentCount ?? 0) > 5) {
     flags.push('fast_submissions');
     score += 0.15;
   }
@@ -298,28 +309,30 @@ async function checkSubmissionVelocity(userId: string): Promise<{ score: number;
 }
 
 async function checkDuplicateHash(hash: string, userId: string): Promise<boolean> {
-  // Check for exact or near-exact hash matches from same user
-  const existing = await prisma.submission.findFirst({
-    where: {
-      userId,
-      perceptualHash: hash,
-      status: { in: ['ACCEPTED', 'PENDING', 'PROCESSING'] },
-    },
-  });
+  const admin = getAdminClient();
+  const { data: existing } = await admin
+    .from('submissions')
+    .select('id')
+    .eq('userId', userId)
+    .eq('perceptualHash', hash)
+    .in('status', ['ACCEPTED', 'PENDING', 'PROCESSING'])
+    .maybeSingle();
   return existing !== null;
 }
 
 async function updateUserTrustScore(userId: string, delta: number): Promise<void> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { trustScore: true },
-  });
+  const admin = getAdminClient();
+  const { data: user } = await admin
+    .from('users')
+    .select('trustScore')
+    .eq('id', userId)
+    .maybeSingle();
 
   if (user) {
     const newScore = Math.max(0, Math.min(1, user.trustScore + delta));
-    await prisma.user.update({
-      where: { id: userId },
-      data: { trustScore: newScore },
-    });
+    await admin
+      .from('users')
+      .update({ trustScore: newScore, updatedAt: new Date().toISOString() })
+      .eq('id', userId);
   }
 }

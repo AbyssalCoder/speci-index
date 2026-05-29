@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 import { validateSubmission } from '@/lib/anticheat';
 import { checkRestrictedZone } from '@/lib/geofencing';
@@ -27,7 +27,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+    const admin = getAdminClient();
+
+    const { data: dbUser } = await admin
+      .from('users')
+      .select('id, isBanned')
+      .eq('id', user.id)
+      .maybeSingle();
+
     if (!dbUser || dbUser.isBanned) {
       return NextResponse.json({ success: false, error: 'Account suspended' }, { status: 403 });
     }
@@ -45,10 +52,13 @@ export async function POST(req: NextRequest) {
 
     // Rate limit: max 30 submissions per hour
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const recentCount = await prisma.submission.count({
-      where: { userId: user.id, createdAt: { gte: oneHourAgo } },
-    });
-    if (recentCount >= 30) {
+    const { count: recentCount } = await admin
+      .from('submissions')
+      .select('id', { count: 'exact', head: true })
+      .eq('userId', user.id)
+      .gte('createdAt', oneHourAgo.toISOString());
+
+    if ((recentCount ?? 0) >= 30) {
       return NextResponse.json(
         { success: false, error: 'Rate limit exceeded. Max 30 submissions per hour.' },
         { status: 429 }
@@ -59,7 +69,7 @@ export async function POST(req: NextRequest) {
     const imageBuffer = Buffer.from(imageBase64, 'base64');
     const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
 
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from('submissions')
       .upload(fileName, imageBuffer, {
         contentType: 'image/jpeg',
@@ -78,17 +88,22 @@ export async function POST(req: NextRequest) {
       .getPublicUrl(fileName);
 
     // Create initial submission record
-    const submission = await prisma.submission.create({
-      data: {
+    const { data: submission, error: subError } = await admin
+      .from('submissions')
+      .insert({
         userId: user.id,
         imageUrl: publicUrl,
         status: 'PROCESSING',
-        latitude,
-        longitude,
-        exifData: exifData ? (exifData as any) : undefined,
-        deviceInfo: deviceInfo ? (deviceInfo as any) : undefined,
-      },
-    });
+        latitude: latitude ?? null,
+        longitude: longitude ?? null,
+        exifData: exifData ?? null,
+        deviceInfo: deviceInfo ?? null,
+        updatedAt: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+
+    if (subError || !submission) throw subError;
 
     // Anti-cheat validation
     const validation = await validateSubmission({
@@ -101,14 +116,15 @@ export async function POST(req: NextRequest) {
     });
 
     if (!validation.isValid) {
-      await prisma.submission.update({
-        where: { id: submission.id },
-        data: {
+      await admin
+        .from('submissions')
+        .update({
           status: 'REJECTED',
           aiRejectionReason: validation.rejectionReason,
           fraudScore: validation.fraudScore,
-        },
-      });
+          updatedAt: new Date().toISOString(),
+        })
+        .eq('id', submission.id);
 
       return NextResponse.json({
         success: false,
@@ -117,8 +133,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // AI Species Identification (call AI microservice)
-    let aiResult;
+    // AI Species Identification
+    let aiResult: any;
     try {
       const aiResponse = await fetch(`${process.env.AI_SERVICE_URL}/identify`, {
         method: 'POST',
@@ -130,10 +146,10 @@ export async function POST(req: NextRequest) {
       });
       aiResult = await aiResponse.json();
     } catch {
-      await prisma.submission.update({
-        where: { id: submission.id },
-        data: { status: 'PENDING', aiRejectionReason: 'AI service unavailable' },
-      });
+      await admin
+        .from('submissions')
+        .update({ status: 'PENDING', aiRejectionReason: 'AI service unavailable', updatedAt: new Date().toISOString() })
+        .eq('id', submission.id);
       return NextResponse.json({
         success: true,
         data: { id: submission.id, status: 'PENDING', message: 'Queued for processing' },
@@ -142,17 +158,18 @@ export async function POST(req: NextRequest) {
 
     // Validate AI result
     if (!aiResult.species || aiResult.confidence < 0.7) {
-      await prisma.submission.update({
-        where: { id: submission.id },
-        data: {
+      await admin
+        .from('submissions')
+        .update({
           status: 'REJECTED',
           aiConfidence: aiResult.confidence,
           aiSpeciesGuess: aiResult.species?.scientificName,
           aiRejectionReason: aiResult.confidence < 0.7
             ? `Low confidence: ${(aiResult.confidence * 100).toFixed(1)}%`
             : 'Species not identified',
-        },
-      });
+          updatedAt: new Date().toISOString(),
+        })
+        .eq('id', submission.id);
       return NextResponse.json({
         success: false,
         error: 'Could not identify species with sufficient confidence',
@@ -162,10 +179,10 @@ export async function POST(req: NextRequest) {
 
     // Reject humans and trees
     if (aiResult.isHuman) {
-      await prisma.submission.update({
-        where: { id: submission.id },
-        data: { status: 'REJECTED', aiRejectionReason: 'Human detected — only non-human species allowed' },
-      });
+      await admin
+        .from('submissions')
+        .update({ status: 'REJECTED', aiRejectionReason: 'Human detected — only non-human species allowed', updatedAt: new Date().toISOString() })
+        .eq('id', submission.id);
       return NextResponse.json({
         success: false,
         error: 'Human detected. Only non-human species are allowed.',
@@ -174,10 +191,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (aiResult.isTree) {
-      await prisma.submission.update({
-        where: { id: submission.id },
-        data: { status: 'REJECTED', aiRejectionReason: 'Trees are not collectible species' },
-      });
+      await admin
+        .from('submissions')
+        .update({ status: 'REJECTED', aiRejectionReason: 'Trees are not collectible species', updatedAt: new Date().toISOString() })
+        .eq('id', submission.id);
       return NextResponse.json({
         success: false,
         error: 'Trees are not collectible. Flowers, fungi, and other species are welcome!',
@@ -186,9 +203,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Find or create species record
-    let species = await prisma.species.findUnique({
-      where: { scientificName: aiResult.species.scientificName },
-    });
+    let { data: species } = await admin
+      .from('species')
+      .select('*')
+      .eq('scientificName', aiResult.species.scientificName)
+      .maybeSingle();
 
     if (!species) {
       const rarityPoints = calculateRarityPoints({
@@ -199,21 +218,28 @@ export async function POST(req: NextRequest) {
         eventMultiplier: 1.0,
       });
 
-      species = await prisma.species.create({
-        data: {
+      const { data: newSpecies } = await admin
+        .from('species')
+        .insert({
           scientificName: aiResult.species.scientificName,
           commonName: aiResult.species.commonName,
           category: aiResult.species.category ?? 'OTHER',
           conservationStatus: aiResult.species.conservationStatus ?? 'LC',
-          habitat: aiResult.species.habitat,
+          habitat: aiResult.species.habitat ?? null,
           regions: aiResult.species.regions ?? [],
-          description: aiResult.species.description,
+          description: aiResult.species.description ?? null,
           rarityPoints,
           rarityTier: getRarityTierFromPoints(rarityPoints),
           isVerified: false,
-        },
-      });
+          updatedAt: new Date().toISOString(),
+        })
+        .select('*')
+        .single();
+
+      species = newSpecies;
     }
+
+    if (!species) throw new Error('Failed to find or create species');
 
     // Check restricted zone
     let isRestrictedZone = false;
@@ -225,9 +251,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Check if first discovery
-    const existingDiscovery = await prisma.discovery.findUnique({
-      where: { userId_speciesId: { userId: user.id, speciesId: species.id } },
-    });
+    const { data: existingDiscovery } = await admin
+      .from('discoveries')
+      .select('id')
+      .eq('userId', user.id)
+      .eq('speciesId', species.id)
+      .maybeSingle();
 
     const isFirstDiscovery = !existingDiscovery;
     let pointsAwarded = 0;
@@ -237,9 +266,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Update submission
-    await prisma.submission.update({
-      where: { id: submission.id },
-      data: {
+    await admin
+      .from('submissions')
+      .update({
         status: 'ACCEPTED',
         speciesId: species.id,
         aiConfidence: aiResult.confidence,
@@ -249,31 +278,42 @@ export async function POST(req: NextRequest) {
         pointsAwarded,
         isDuplicate: !isFirstDiscovery,
         perceptualHash: validation.perceptualHash,
-      },
-    });
+        updatedAt: new Date().toISOString(),
+      })
+      .eq('id', submission.id);
 
     // Create discovery + update user stats (only if first discovery)
     if (isFirstDiscovery) {
-      await prisma.$transaction([
-        prisma.discovery.create({
-          data: {
-            userId: user.id,
-            speciesId: species.id,
-            pointsEarned: pointsAwarded,
-            latitude,
-            longitude,
-            submissionId: submission.id,
-          },
-        }),
-        prisma.user.update({
-          where: { id: user.id },
-          data: {
-            totalPoints: { increment: pointsAwarded },
-            speciesCount: { increment: 1 },
-            xp: { increment: Math.round(pointsAwarded * 0.5) + 10 },
-          },
-        }),
-      ]);
+      await admin
+        .from('discoveries')
+        .insert({
+          userId: user.id,
+          speciesId: species.id,
+          pointsEarned: pointsAwarded,
+          latitude: latitude ?? null,
+          longitude: longitude ?? null,
+          submissionId: submission.id,
+          updatedAt: new Date().toISOString(),
+        });
+
+      // Fetch current user stats and increment
+      const { data: currentUser } = await admin
+        .from('users')
+        .select('totalPoints, speciesCount, xp')
+        .eq('id', user.id)
+        .single();
+
+      if (currentUser) {
+        await admin
+          .from('users')
+          .update({
+            totalPoints: (currentUser.totalPoints ?? 0) + pointsAwarded,
+            speciesCount: (currentUser.speciesCount ?? 0) + 1,
+            xp: (currentUser.xp ?? 0) + Math.round(pointsAwarded * 0.5) + 10,
+            updatedAt: new Date().toISOString(),
+          })
+          .eq('id', user.id);
+      }
     }
 
     return NextResponse.json({
@@ -320,40 +360,29 @@ export async function GET(req: NextRequest) {
     const pageSize = Math.min(50, Math.max(1, parseInt(searchParams.get('pageSize') ?? '20')));
     const status = searchParams.get('status') as string | null;
 
-    const where: Record<string, unknown> = { userId: user.id };
-    if (status) where.status = status;
+    const admin = getAdminClient();
+    let query = admin
+      .from('submissions')
+      .select('*, species:species(id, scientificName, commonName, category, conservationStatus, rarityTier, rarityPoints)', { count: 'exact' })
+      .eq('userId', user.id);
 
-    const [submissions, total] = await Promise.all([
-      prisma.submission.findMany({
-        where,
-        include: {
-          species: {
-            select: {
-              id: true,
-              scientificName: true,
-              commonName: true,
-              category: true,
-              conservationStatus: true,
-              rarityTier: true,
-              rarityPoints: true,
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      prisma.submission.count({ where }),
-    ]);
+    if (status) query = query.eq('status', status);
+
+    query = query
+      .order('createdAt', { ascending: false })
+      .range((page - 1) * pageSize, page * pageSize - 1);
+
+    const { data: submissions, count: total, error } = await query;
+    if (error) throw error;
 
     return NextResponse.json({
       success: true,
       data: {
-        items: submissions,
-        total,
+        items: submissions ?? [],
+        total: total ?? 0,
         page,
         pageSize,
-        hasMore: page * pageSize < total,
+        hasMore: page * pageSize < (total ?? 0),
       },
     });
   } catch (error) {

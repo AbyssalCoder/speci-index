@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const friendRequestSchema = z.object({
@@ -24,46 +24,49 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Cannot send request to yourself' }, { status: 400 });
     }
 
+    const admin = getAdminClient();
+
     // Check if already friends
-    const existingFriendship = await prisma.friendship.findFirst({
-      where: {
-        OR: [
-          { userAId: user.id, userBId: parsed.data.receiverId },
-          { userAId: parsed.data.receiverId, userBId: user.id },
-        ],
-      },
-    });
+    const { data: existingFriendship } = await admin
+      .from('friendships')
+      .select('id')
+      .or(`and(userAId.eq.${user.id},userBId.eq.${parsed.data.receiverId}),and(userAId.eq.${parsed.data.receiverId},userBId.eq.${user.id})`)
+      .maybeSingle();
+
     if (existingFriendship) {
       return NextResponse.json({ success: false, error: 'Already friends' }, { status: 409 });
     }
 
     // Check for existing pending request
-    const existing = await prisma.friendRequest.findFirst({
-      where: {
-        OR: [
-          { senderId: user.id, receiverId: parsed.data.receiverId, status: 'PENDING' },
-          { senderId: parsed.data.receiverId, receiverId: user.id, status: 'PENDING' },
-        ],
-      },
-    });
+    const { data: existing } = await admin
+      .from('friend_requests')
+      .select('id')
+      .eq('status', 'PENDING')
+      .or(`and(senderId.eq.${user.id},receiverId.eq.${parsed.data.receiverId}),and(senderId.eq.${parsed.data.receiverId},receiverId.eq.${user.id})`)
+      .maybeSingle();
+
     if (existing) {
       return NextResponse.json({ success: false, error: 'Request already pending' }, { status: 409 });
     }
 
-    const request = await prisma.friendRequest.create({
-      data: { senderId: user.id, receiverId: parsed.data.receiverId },
-    });
+    const { data: request, error: reqError } = await admin
+      .from('friend_requests')
+      .insert({ senderId: user.id, receiverId: parsed.data.receiverId, updatedAt: new Date().toISOString() })
+      .select()
+      .single();
+
+    if (reqError) throw reqError;
 
     // Create notification
-    await prisma.notification.create({
-      data: {
+    await admin
+      .from('notifications')
+      .insert({
         userId: parsed.data.receiverId,
         type: 'FRIEND_REQUEST',
         title: 'New Friend Request',
-        body: `You received a friend request`,
+        body: 'You received a friend request',
         data: { requestId: request.id, senderId: user.id },
-      },
-    });
+      });
 
     return NextResponse.json({ success: true, data: request });
   } catch (error) {
@@ -79,35 +82,30 @@ export async function GET(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 
+    const admin = getAdminClient();
     const { searchParams } = new URL(req.url);
     const type = searchParams.get('type') ?? 'friends';
 
     if (type === 'requests') {
-      const requests = await prisma.friendRequest.findMany({
-        where: { receiverId: user.id, status: 'PENDING' },
-        include: {
-          sender: {
-            select: { id: true, username: true, displayName: true, avatarUrl: true, totalPoints: true },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-      return NextResponse.json({ success: true, data: requests });
+      const { data: requests, error } = await admin
+        .from('friend_requests')
+        .select('*, sender:users!senderId(id, username, displayName, avatarUrl, totalPoints)')
+        .eq('receiverId', user.id)
+        .eq('status', 'PENDING')
+        .order('createdAt', { ascending: false });
+
+      if (error) throw error;
+      return NextResponse.json({ success: true, data: requests ?? [] });
     }
 
-    const friendships = await prisma.friendship.findMany({
-      where: { OR: [{ userAId: user.id }, { userBId: user.id }] },
-      include: {
-        userA: {
-          select: { id: true, username: true, displayName: true, avatarUrl: true, totalPoints: true, speciesCount: true },
-        },
-        userB: {
-          select: { id: true, username: true, displayName: true, avatarUrl: true, totalPoints: true, speciesCount: true },
-        },
-      },
-    });
+    const { data: friendships, error } = await admin
+      .from('friendships')
+      .select('*, userA:users!userAId(id, username, displayName, avatarUrl, totalPoints, speciesCount), userB:users!userBId(id, username, displayName, avatarUrl, totalPoints, speciesCount)')
+      .or(`userAId.eq.${user.id},userBId.eq.${user.id}`);
 
-    const friends = friendships.map((f) =>
+    if (error) throw error;
+
+    const friends = (friendships ?? []).map((f: Record<string, any>) =>
       f.userAId === user.id ? f.userB : f.userA
     );
 
@@ -128,29 +126,35 @@ export async function PATCH(req: NextRequest) {
     const body = await req.json();
     const { requestId, action } = body as { requestId: string; action: 'accept' | 'reject' };
 
-    const request = await prisma.friendRequest.findUnique({ where: { id: requestId } });
+    const admin = getAdminClient();
+
+    const { data: request } = await admin
+      .from('friend_requests')
+      .select('*')
+      .eq('id', requestId)
+      .maybeSingle();
+
     if (!request || request.receiverId !== user.id || request.status !== 'PENDING') {
       return NextResponse.json({ success: false, error: 'Invalid request' }, { status: 400 });
     }
 
     if (action === 'accept') {
-      await prisma.$transaction([
-        prisma.friendRequest.update({
-          where: { id: requestId },
-          data: { status: 'ACCEPTED' },
-        }),
-        prisma.friendship.create({
-          data: {
-            userAId: request.senderId,
-            userBId: request.receiverId,
-          },
-        }),
-      ]);
+      await admin
+        .from('friend_requests')
+        .update({ status: 'ACCEPTED', updatedAt: new Date().toISOString() })
+        .eq('id', requestId);
+
+      await admin
+        .from('friendships')
+        .insert({
+          userAId: request.senderId,
+          userBId: request.receiverId,
+        });
     } else {
-      await prisma.friendRequest.update({
-        where: { id: requestId },
-        data: { status: 'REJECTED' },
-      });
+      await admin
+        .from('friend_requests')
+        .update({ status: 'REJECTED', updatedAt: new Date().toISOString() })
+        .eq('id', requestId);
     }
 
     return NextResponse.json({ success: true });

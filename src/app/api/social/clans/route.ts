@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const createClanSchema = z.object({
@@ -22,24 +22,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid input' }, { status: 400 });
     }
 
+    const admin = getAdminClient();
+
     // Check if user already in a clan
-    const existing = await prisma.clanMember.findFirst({ where: { userId: user.id } });
+    const { data: existing } = await admin
+      .from('clan_members')
+      .select('id')
+      .eq('userId', user.id)
+      .maybeSingle();
+
     if (existing) {
       return NextResponse.json({ success: false, error: 'Already in a clan' }, { status: 409 });
     }
 
-    const clan = await prisma.$transaction(async (tx) => {
-      const clan = await tx.clan.create({
-        data: {
-          ...parsed.data,
-          memberCount: 1,
-        },
-      });
-      await tx.clanMember.create({
-        data: { clanId: clan.id, userId: user.id, role: 'LEADER' },
-      });
-      return clan;
-    });
+    // Create clan
+    const { data: clan, error: clanError } = await admin
+      .from('clans')
+      .insert({
+        ...parsed.data,
+        memberCount: 1,
+        updatedAt: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (clanError || !clan) throw clanError;
+
+    // Add user as leader
+    await admin
+      .from('clan_members')
+      .insert({ clanId: clan.id, userId: user.id, role: 'LEADER' });
 
     return NextResponse.json({ success: true, data: clan });
   } catch (error) {
@@ -54,27 +66,20 @@ export async function GET(req: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1'));
     const pageSize = Math.min(50, parseInt(searchParams.get('pageSize') ?? '20'));
 
-    const [clans, total] = await Promise.all([
-      prisma.clan.findMany({
-        where: { isPublic: true },
-        orderBy: { totalPoints: 'desc' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        include: {
-          members: {
-            where: { role: 'LEADER' },
-            include: {
-              user: { select: { username: true, displayName: true } },
-            },
-          },
-        },
-      }),
-      prisma.clan.count({ where: { isPublic: true } }),
-    ]);
+    const admin = getAdminClient();
+
+    const { data: clans, count: total, error } = await admin
+      .from('clans')
+      .select('*, members:clan_members(role, user:users(username, displayName))', { count: 'exact' })
+      .eq('isPublic', true)
+      .order('totalPoints', { ascending: false })
+      .range((page - 1) * pageSize, page * pageSize - 1);
+
+    if (error) throw error;
 
     return NextResponse.json({
       success: true,
-      data: { items: clans, total, page, pageSize, hasMore: page * pageSize < total },
+      data: { items: clans ?? [], total: total ?? 0, page, pageSize, hasMore: page * pageSize < (total ?? 0) },
     });
   } catch (error) {
     console.error('Clan list error:', error);

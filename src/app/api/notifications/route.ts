@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,22 +12,34 @@ export async function GET(req: NextRequest) {
     const unreadOnly = searchParams.get('unread') === 'true';
     const limit = Math.min(50, parseInt(searchParams.get('limit') ?? '20'));
 
-    const where: Record<string, unknown> = { userId: user.id };
-    if (unreadOnly) where.isRead = false;
+    const admin = getAdminClient();
 
-    const notifications = await prisma.notification.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+    let query = admin
+      .from('notifications')
+      .select('*')
+      .eq('userId', user.id)
+      .order('createdAt', { ascending: false })
+      .limit(limit);
 
-    const unreadCount = await prisma.notification.count({
-      where: { userId: user.id, isRead: false },
-    });
+    if (unreadOnly) {
+      query = query.eq('isRead', false);
+    }
+
+    const [notifResult, countResult] = await Promise.all([
+      query,
+      admin
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('userId', user.id)
+        .eq('isRead', false),
+    ]);
+
+    if (notifResult.error) throw notifResult.error;
+    if (countResult.error) throw countResult.error;
 
     return NextResponse.json({
       success: true,
-      data: { notifications, unreadCount },
+      data: { notifications: notifResult.data ?? [], unreadCount: countResult.count ?? 0 },
     });
   } catch (error) {
     console.error('Notifications error:', error);
@@ -48,16 +60,24 @@ export async function PATCH(req: NextRequest) {
       markAll?: boolean;
     };
 
+    const admin = getAdminClient();
+
     if (markAll) {
-      await prisma.notification.updateMany({
-        where: { userId: user.id, isRead: false },
-        data: { isRead: true },
-      });
+      const { error } = await admin
+        .from('notifications')
+        .update({ isRead: true })
+        .eq('userId', user.id)
+        .eq('isRead', false);
+
+      if (error) throw error;
     } else if (notificationIds?.length) {
-      await prisma.notification.updateMany({
-        where: { id: { in: notificationIds }, userId: user.id },
-        data: { isRead: true },
-      });
+      const { error } = await admin
+        .from('notifications')
+        .update({ isRead: true })
+        .in('id', notificationIds)
+        .eq('userId', user.id);
+
+      if (error) throw error;
     }
 
     return NextResponse.json({ success: true });

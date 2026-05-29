@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,28 +11,43 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const type = searchParams.get('type');
 
-    const where: Record<string, unknown> = { isActive: true };
-    if (type) where.type = type;
+    const admin = getAdminClient();
+    const now = new Date().toISOString();
 
-    const now = new Date();
-    const quests = await prisma.quest.findMany({
-      where: {
-        ...where,
-        startsAt: { lte: now },
-        endsAt: { gte: now },
-      },
-      orderBy: { endsAt: 'asc' },
-    });
+    let questQuery = admin
+      .from('quests')
+      .select('*')
+      .eq('isActive', true)
+      .lte('startsAt', now)
+      .gte('endsAt', now)
+      .order('endsAt', { ascending: true });
 
-    const questIds = quests.map((q) => q.id);
-    const progress = await prisma.questProgress.findMany({
-      where: { userId: user.id, questId: { in: questIds } },
-    });
+    if (type) {
+      questQuery = questQuery.eq('type', type);
+    }
 
-    const progressMap = new Map(progress.map((p) => [p.questId, p]));
+    const { data: quests, error: questError } = await questQuery;
+    if (questError) throw questError;
 
-    const data = quests.map((q) => {
-      const p = progressMap.get(q.id);
+    const questList = quests ?? [];
+    const questIds = questList.map((q: Record<string, unknown>) => q.id as string);
+
+    let progress: Record<string, unknown>[] = [];
+    if (questIds.length > 0) {
+      const { data: progressData, error: progressError } = await admin
+        .from('quest_progress')
+        .select('*')
+        .eq('userId', user.id)
+        .in('questId', questIds);
+
+      if (progressError) throw progressError;
+      progress = progressData ?? [];
+    }
+
+    const progressMap = new Map(progress.map((p) => [p.questId as string, p]));
+
+    const data = questList.map((q: Record<string, unknown>) => {
+      const p = progressMap.get(q.id as string);
       return {
         id: q.id,
         title: q.title,
@@ -42,8 +57,8 @@ export async function GET(req: NextRequest) {
         xpReward: q.xpReward,
         pointReward: q.pointReward,
         endsAt: q.endsAt,
-        progress: p?.progress ?? 0,
-        completed: p?.completed ?? false,
+        progress: (p as Record<string, unknown>)?.progress ?? 0,
+        completed: (p as Record<string, unknown>)?.completed ?? false,
       };
     });
 

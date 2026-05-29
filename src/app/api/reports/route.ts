@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { z } from 'zod';
 
 const reportSchema = z.object({
@@ -22,12 +22,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid input' }, { status: 400 });
     }
 
-    const report = await prisma.report.create({
-      data: {
+    const admin = getAdminClient();
+    const { data: report, error } = await admin
+      .from('reports')
+      .insert({
         reporterId: user.id,
         ...parsed.data,
-      },
-    });
+        updatedAt: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+
+    if (error) throw error;
 
     return NextResponse.json({ success: true, data: { id: report.id } });
   } catch (error) {

@@ -4,7 +4,7 @@
  * and applies point multipliers accordingly.
  */
 
-import { prisma } from '@/lib/db';
+import { getAdminClient } from '@/lib/supabase/admin';
 import { isInsideRadius } from '@/lib/utils';
 
 interface ZoneCheckResult {
@@ -24,25 +24,20 @@ export async function checkRestrictedZone(
   latitude: number,
   longitude: number
 ): Promise<ZoneCheckResult> {
-  // Query zones within a rough bounding box first (performance optimization)
-  const DEGREE_MARGIN = 0.5; // ~55km rough filter
+  const DEGREE_MARGIN = 0.5;
+  const admin = getAdminClient();
 
-  const zones = await prisma.restrictedZone.findMany({
-    where: {
-      isActive: true,
-      latitude: {
-        gte: latitude - DEGREE_MARGIN,
-        lte: latitude + DEGREE_MARGIN,
-      },
-      longitude: {
-        gte: longitude - DEGREE_MARGIN,
-        lte: longitude + DEGREE_MARGIN,
-      },
-    },
-  });
+  const { data: zones } = await admin
+    .from('restricted_zones')
+    .select('*')
+    .eq('isActive', true)
+    .gte('latitude', latitude - DEGREE_MARGIN)
+    .lte('latitude', latitude + DEGREE_MARGIN)
+    .gte('longitude', longitude - DEGREE_MARGIN)
+    .lte('longitude', longitude + DEGREE_MARGIN);
 
   // Precise radius check
-  for (const zone of zones) {
+  for (const zone of zones ?? []) {
     if (isInsideRadius(latitude, longitude, zone.latitude, zone.longitude, zone.radiusMeters)) {
       return {
         isRestricted: true,
@@ -72,14 +67,19 @@ export async function getRestrictedZones(bounds?: {
   west: number;
   east: number;
 }) {
-  const where: Record<string, unknown> = { isActive: true };
+  const admin = getAdminClient();
+  let query = admin.from('restricted_zones').select('*').eq('isActive', true);
 
   if (bounds) {
-    where.latitude = { gte: bounds.south, lte: bounds.north };
-    where.longitude = { gte: bounds.west, lte: bounds.east };
+    query = query
+      .gte('latitude', bounds.south)
+      .lte('latitude', bounds.north)
+      .gte('longitude', bounds.west)
+      .lte('longitude', bounds.east);
   }
 
-  return prisma.restrictedZone.findMany({ where });
+  const { data } = await query;
+  return data ?? [];
 }
 
 /**
