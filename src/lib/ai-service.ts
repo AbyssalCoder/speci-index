@@ -1,12 +1,12 @@
 /**
  * AI Service — Multi-provider species identification.
- * Primary:  Google Gemini 2.0 Flash  (1,500 req/day free)
- * Fallback: Groq Llama 4 Scout      (14,400 req/day free)
+ * Primary:  Groq Llama 4 Scout      (14,400 req/day free, fastest)
+ * Fallback: Google Gemini 2.0 Flash  (1,500 req/day free, high accuracy)
  * Total free capacity: ~15,900 identifications/day.
  *
  * Env vars needed on Vercel:
- *   GOOGLE_GEMINI_API_KEY  — https://aistudio.google.com/apikey
  *   GROQ_API_KEY           — https://console.groq.com/keys
+ *   GOOGLE_GEMINI_API_KEY  — https://aistudio.google.com/apikey
  */
 
 export interface IdentifyResult {
@@ -186,8 +186,8 @@ function parseAIResponse(raw: string): IdentifyResult {
 export async function identifySpecies(imageBase64: string): Promise<IdentifyResult> {
   const providers: { name: string; call: (b64: string) => Promise<string> }[] = [];
 
-  if (process.env.GOOGLE_GEMINI_API_KEY) providers.push({ name: 'Gemini', call: callGemini });
   if (process.env.GROQ_API_KEY) providers.push({ name: 'Groq', call: callGroq });
+  if (process.env.GOOGLE_GEMINI_API_KEY) providers.push({ name: 'Gemini', call: callGemini });
 
   if (providers.length === 0) {
     return {
