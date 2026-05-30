@@ -1,11 +1,13 @@
 /**
  * AI Service — Multi-provider species identification.
- * Primary:  Groq Llama 4 Scout      (14,400 req/day free, fastest)
+ * Primary:  Groq Llama 4 Scout      (14,400 req/day per key, fastest)
  * Fallback: Google Gemini 2.0 Flash  (1,500 req/day free, high accuracy)
- * Total free capacity: ~15,900 identifications/day.
+ *
+ * Supports multiple Groq keys — comma-separate them in one env var:
+ *   GROQ_API_KEY="key1,key2,key3"  → 43,200 req/day
  *
  * Env vars needed on Vercel:
- *   GROQ_API_KEY           — https://console.groq.com/keys
+ *   GROQ_API_KEY           — https://console.groq.com/keys (comma-separated for multiple)
  *   GOOGLE_GEMINI_API_KEY  — https://aistudio.google.com/apikey
  */
 
@@ -102,8 +104,8 @@ async function callGemini(imageBase64: string): Promise<string> {
   return text;
 }
 
-async function callGroq(imageBase64: string): Promise<string> {
-  const key = process.env.GROQ_API_KEY;
+async function callGroq(imageBase64: string, apiKey?: string): Promise<string> {
+  const key = apiKey || process.env.GROQ_API_KEY;
   if (!key) throw new Error('GROQ_API_KEY not set');
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -186,7 +188,12 @@ function parseAIResponse(raw: string): IdentifyResult {
 export async function identifySpecies(imageBase64: string): Promise<IdentifyResult> {
   const providers: { name: string; call: (b64: string) => Promise<string> }[] = [];
 
-  if (process.env.GROQ_API_KEY) providers.push({ name: 'Groq', call: callGroq });
+  // Add one provider per Groq key (comma-separated)
+  const groqKeys = (process.env.GROQ_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
+  groqKeys.forEach((key, i) => {
+    const label = groqKeys.length > 1 ? `Groq-${i + 1}` : 'Groq';
+    providers.push({ name: label, call: (b64) => callGroq(b64, key) });
+  });
   if (process.env.GOOGLE_GEMINI_API_KEY) providers.push({ name: 'Gemini', call: callGemini });
 
   if (providers.length === 0) {
