@@ -1,7 +1,12 @@
 /**
- * AI Service — Species identification using Google Gemini Vision API.
- * Uses Gemini 2.0 Flash (free tier: 15 RPM, 1500 RPD).
- * Get a free API key at https://aistudio.google.com/apikey
+ * AI Service — Multi-provider species identification.
+ * Primary:  Google Gemini 2.0 Flash  (1,500 req/day free)
+ * Fallback: Groq Llama 4 Scout      (14,400 req/day free)
+ * Total free capacity: ~15,900 identifications/day.
+ *
+ * Env vars needed on Vercel:
+ *   GOOGLE_GEMINI_API_KEY  — https://aistudio.google.com/apikey
+ *   GROQ_API_KEY           — https://console.groq.com/keys
  */
 
 export interface IdentifyResult {
@@ -36,7 +41,7 @@ export interface ValidateResult {
   rejectionReason: string | null;
 }
 
-const GEMINI_IDENTIFY_PROMPT = `You are a wildlife and species identification expert. Analyze this image and identify the species shown.
+const SPECIES_PROMPT = `You are a wildlife and species identification expert. Analyze this image and identify the species shown.
 
 Respond with ONLY a valid JSON object (no markdown, no code fences) in this exact format:
 {
@@ -64,136 +69,155 @@ Rules:
 - For plants/flowers, use FLOWER category
 - For mushrooms, use FUNGI category`;
 
-/**
- * Identify species from a base64 image using Google Gemini Vision.
- */
-export async function identifySpecies(imageBase64: string): Promise<IdentifyResult> {
-  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+// ─── Provider implementations ───────────────────────────────────────
 
-  if (!apiKey) {
-    console.error('GOOGLE_GEMINI_API_KEY not set — cannot identify species');
-    return {
-      species: null,
-      confidence: 0,
-      isHuman: false,
-      isTree: false,
-      isAIGenerated: false,
-      qualityScore: 0,
-      rejectionReason: 'AI service not configured. Please set GOOGLE_GEMINI_API_KEY.',
-    };
-  }
+async function callGemini(imageBase64: string): Promise<string> {
+  const key = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!key) throw new Error('GOOGLE_GEMINI_API_KEY not set');
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    const response = await fetch(url, {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: GEMINI_IDENTIFY_PROMPT },
-            {
-              inlineData: {
-                mimeType: 'image/jpeg',
-                data: imageBase64,
-              },
-            },
-          ],
-        }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 512,
-        },
+        contents: [{ parts: [
+          { text: SPECIES_PROMPT },
+          { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+        ]}],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 512 },
       }),
-    });
+    },
+  );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`Gemini API error (${response.status}):`, errText);
-      throw new Error(`Gemini API returned ${response.status}`);
-    }
-
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!text) {
-      console.error('Gemini returned no text:', JSON.stringify(data).slice(0, 500));
-      throw new Error('No response from Gemini');
-    }
-
-    // Parse JSON from response (handle potential markdown fences)
-    const jsonStr = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-    const result = JSON.parse(jsonStr);
-
-    if (result.isHuman) {
-      return {
-        species: null,
-        confidence: result.confidence || 0.8,
-        isHuman: true,
-        isTree: false,
-        isAIGenerated: false,
-        qualityScore: 0.85,
-        rejectionReason: null,
-      };
-    }
-
-    if (result.isTree) {
-      return {
-        species: null,
-        confidence: result.confidence || 0.7,
-        isHuman: false,
-        isTree: true,
-        isAIGenerated: false,
-        qualityScore: 0.85,
-        rejectionReason: null,
-      };
-    }
-
-    if (!result.identified || !result.scientificName) {
-      return {
-        species: null,
-        confidence: result.confidence || 0,
-        isHuman: false,
-        isTree: false,
-        isAIGenerated: false,
-        qualityScore: 0.85,
-        rejectionReason: 'Could not identify a species in this image',
-      };
-    }
-
-    // Validate category
-    const validCategories = ['MAMMAL', 'BIRD', 'REPTILE', 'AMPHIBIAN', 'FISH', 'INSECT', 'ARACHNID', 'CRUSTACEAN', 'MOLLUSK', 'MARINE', 'FLOWER', 'FUNGI', 'OTHER'];
-    const category = validCategories.includes(result.category) ? result.category : 'OTHER';
-
-    // Validate conservation status
-    const validStatuses = ['EX', 'EW', 'CR', 'EN', 'VU', 'NT', 'LC', 'DD', 'NE'];
-    const status = validStatuses.includes(result.conservationStatus) ? result.conservationStatus : 'LC';
-
-    return {
-      species: {
-        scientificName: result.scientificName,
-        commonName: result.commonName,
-        confidence: Math.min(1, Math.max(0, result.confidence || 0.8)),
-        category,
-        conservationStatus: status,
-        habitat: result.habitat || null,
-        regions: [],
-        description: result.description || null,
-        observationCount: null,
-      },
-      confidence: Math.min(1, Math.max(0, result.confidence || 0.8)),
-      isHuman: false,
-      isTree: false,
-      isAIGenerated: false,
-      qualityScore: 0.85,
-      rejectionReason: null,
-    };
-  } catch (error) {
-    console.error('Species identification error:', error);
-    throw error; // Let the caller handle the fallback
+  if (!res.ok) {
+    const err = await res.text();
+    console.error(`Gemini ${res.status}:`, err.slice(0, 300));
+    throw new Error(`Gemini returned ${res.status}`);
   }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('Gemini returned empty response');
+  return text;
 }
+
+async function callGroq(imageBase64: string): Promise<string> {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error('GROQ_API_KEY not set');
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: SPECIES_PROMPT },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+          ],
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 512,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error(`Groq ${res.status}:`, err.slice(0, 300));
+    throw new Error(`Groq returned ${res.status}`);
+  }
+
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Groq returned empty response');
+  return text;
+}
+
+// ─── Shared parser ──────────────────────────────────────────────────
+
+const VALID_CATEGORIES = ['MAMMAL', 'BIRD', 'REPTILE', 'AMPHIBIAN', 'FISH', 'INSECT', 'ARACHNID', 'CRUSTACEAN', 'MOLLUSK', 'MARINE', 'FLOWER', 'FUNGI', 'OTHER'];
+const VALID_STATUSES = ['EX', 'EW', 'CR', 'EN', 'VU', 'NT', 'LC', 'DD', 'NE'];
+
+function parseAIResponse(raw: string): IdentifyResult {
+  const jsonStr = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+  const r = JSON.parse(jsonStr);
+
+  if (r.isHuman) {
+    return { species: null, confidence: r.confidence || 0.8, isHuman: true, isTree: false, isAIGenerated: false, qualityScore: 0.85, rejectionReason: null };
+  }
+  if (r.isTree) {
+    return { species: null, confidence: r.confidence || 0.7, isHuman: false, isTree: true, isAIGenerated: false, qualityScore: 0.85, rejectionReason: null };
+  }
+  if (!r.identified || !r.scientificName) {
+    return { species: null, confidence: r.confidence || 0, isHuman: false, isTree: false, isAIGenerated: false, qualityScore: 0.85, rejectionReason: 'Could not identify a species in this image' };
+  }
+
+  const confidence = Math.min(1, Math.max(0, r.confidence || 0.8));
+  return {
+    species: {
+      scientificName: r.scientificName,
+      commonName: r.commonName,
+      confidence,
+      category: VALID_CATEGORIES.includes(r.category) ? r.category : 'OTHER',
+      conservationStatus: VALID_STATUSES.includes(r.conservationStatus) ? r.conservationStatus : 'LC',
+      habitat: r.habitat || null,
+      regions: [],
+      description: r.description || null,
+      observationCount: null,
+    },
+    confidence,
+    isHuman: false,
+    isTree: false,
+    isAIGenerated: false,
+    qualityScore: 0.85,
+    rejectionReason: null,
+  };
+}
+
+// ─── Main entry point (multi-provider with fallback) ────────────────
+
+export async function identifySpecies(imageBase64: string): Promise<IdentifyResult> {
+  const providers: { name: string; call: (b64: string) => Promise<string> }[] = [];
+
+  if (process.env.GOOGLE_GEMINI_API_KEY) providers.push({ name: 'Gemini', call: callGemini });
+  if (process.env.GROQ_API_KEY) providers.push({ name: 'Groq', call: callGroq });
+
+  if (providers.length === 0) {
+    return {
+      species: null, confidence: 0, isHuman: false, isTree: false,
+      isAIGenerated: false, qualityScore: 0,
+      rejectionReason: 'No AI provider configured. Set GOOGLE_GEMINI_API_KEY or GROQ_API_KEY.',
+    };
+  }
+
+  for (const provider of providers) {
+    try {
+      console.log(`[AI] Trying ${provider.name}...`);
+      const raw = await provider.call(imageBase64);
+      const result = parseAIResponse(raw);
+      console.log(`[AI] ${provider.name} identified: ${result.species?.commonName ?? 'none'} (${result.confidence})`);
+      return result;
+    } catch (err) {
+      console.error(`[AI] ${provider.name} failed:`, err instanceof Error ? err.message : err);
+      // Continue to next provider
+    }
+  }
+
+  return {
+    species: null, confidence: 0, isHuman: false, isTree: false,
+    isAIGenerated: false, qualityScore: 0,
+    rejectionReason: 'All AI providers failed. Please try again later.',
+  };
+}
+
+// ─── Image validation ───────────────────────────────────────────────
 
 function simpleHashHex(str: string): string {
   let hash = 0;
@@ -205,9 +229,6 @@ function simpleHashHex(str: string): string {
   return Math.abs(hash).toString(16).padStart(16, '0');
 }
 
-/**
- * Validate an image for anti-cheat purposes.
- */
 export async function validateImage(imageBase64: string): Promise<ValidateResult> {
   const isTooBig = imageBase64.length > 20 * 1024 * 1024;
   const isTooSmall = imageBase64.length < 100;
